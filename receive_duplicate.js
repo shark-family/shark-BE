@@ -1,6 +1,5 @@
 const mqtt = require('mqtt');
 const mysql = require('mysql2');
-const crypto = require('crypto');
 
 // MQTT Broker 연결 정보
 const brokerIp = '210.94.199.225';
@@ -24,14 +23,17 @@ db.connect((err) => {
     console.log('DB에 연결되었습니다.');
 });
 
-// 최근 처리된 메시지를 저장하기 위한 캐시
+// 최근 메시지 캐싱
 const recentMessages = new Set();
-const MESSAGE_CACHE_DURATION = 5000; // 메시지 중복 제거를 위한 캐시 지속 시간 (밀리초)
+const MESSAGE_TTL = 60000; // 메시지 중복 감지를 위한 TTL (60초)
 
-// 메시지 해시 생성 함수
-function generateMessageHash(message) {
-    return crypto.createHash('sha256').update(message).digest('hex');
+// 메시지 캐시 정리 함수
+function cleanUpRecentMessages() {
+    setInterval(() => {
+        recentMessages.clear();
+    }, MESSAGE_TTL);
 }
+cleanUpRecentMessages();
 
 // MQTT 클라이언트 연결
 const client = mqtt.connect(brokerUrl);
@@ -53,22 +55,18 @@ client.on('connect', () => {
 client.on('message', (topic, message) => {
     try {
         const messageStr = message.toString();
-        const messageHash = generateMessageHash(messageStr);
 
-        // 최근 메시지 중복 체크
-        if (recentMessages.has(messageHash)) {
-            console.log('중복 메시지로 저장 생략:', messageStr);
+        // 중복 메시지 확인
+        if (recentMessages.has(messageStr)) {
+            console.log('중복 메시지 무시:', messageStr);
             return;
         }
-
-        // 메시지를 최근 메시지 캐시에 추가
-        recentMessages.add(messageHash);
-        setTimeout(() => recentMessages.delete(messageHash), MESSAGE_CACHE_DURATION);
+        recentMessages.add(messageStr);
 
         // JSON 변환을 위해 메시지 가공
         let processedMessageStr = messageStr;
-        if (messageStr.includes('"data":[')) {
-            processedMessageStr = messageStr.replace(/"data":\[(.+)\]/, (match, p1) => {
+        if (processedMessageStr.includes('"data":[')) {
+            processedMessageStr = processedMessageStr.replace(/"data":\[(.+)\]/, (match, p1) => {
                 const fixedData = p1.replace(/([a-zA-Z0-9_]+):/g, '"$1":').replace(/,\s*$/, '');
                 return `"data":{${fixedData}}`;
             });
