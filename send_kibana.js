@@ -2,6 +2,7 @@ const mqtt = require('mqtt');
 const mysql = require('mysql2');
 const crypto = require('crypto');
 const axios = require('axios');
+const moment = require('moment-timezone'); // 시간대 변환을 위한 모듈
 
 // MQTT Broker 연결 정보
 const brokerIp = '210.94.199.225';
@@ -156,42 +157,54 @@ function insertSensorData(deviceId, applicationID, applicationName, data, devEUI
         ) VALUES (?, ?, ?, ?, ?, NOW(), NOW())
     `;
 
-    // 센서 데이터 저장 후 Kibana로 전송
-    const kibanaData = {
-        applicationID,
-        applicationName,
-        devEUI: convertDevEUIToLong(devEUI), // long 값으로 변환된 devEUI
-        deviceName: `${applicationName}_${devEUI}`,
-        Temp: temp ?? 0,
-        pH: ph ?? 0,
-        TURBIDITY: turbidity ?? 0,
-        DO: doValue ?? 0,
-        NH4: nh4 ?? 0,
-        salt: salt ?? 0,
-        ALCOHOL: 0, // 기본값
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-    };
+    // MySQL에서 저장된 시간을 가져오고 Kibana로 전송
+    const dbTimeQuery = `SELECT NOW() AS currentTime`;
 
-    // 센서 데이터 저장 후 한 번만 Kibana로 전송
-    let remainingSensors = sensors.length;
-    sensors.forEach((sensor) => {
-        if (sensor.value !== null) {
-            db.query(sensorInsertQuery, [deviceId, applicationID, applicationName, sensor.type, sensor.value], (err, result) => {
-                if (err) {
-                    console.error(`Sensor 데이터 삽입 오류 (${sensor.type}):`, err);
-                    return;
-                }
-                console.log(`Sensor 데이터 삽입 완료 (${sensor.type}):`, result.insertId);
-
-                remainingSensors--;
-                if (remainingSensors === 0) {
-                    // 모든 센서 데이터 저장이 완료된 후 Kibana로 전송
-                    sendDataToKibana(kibanaData);
-                }
-            });
-        } else {
-            remainingSensors--;
+    db.query(dbTimeQuery, (err, results) => {
+        if (err) {
+            console.error('DB 시간 조회 오류:', err);
+            return;
         }
+
+        const dbTime = results[0].currentTime; // MySQL 서버의 현재 시간 (로컬 시간)
+        const currentTimeKibana = moment(dbTime).tz('Asia/Seoul').format('YYYY-MM-DDTHH:mm:ss.SSSSSS'); // 서울 시간 ISO 포맷
+
+        // Kibana로 전송할 데이터 준비
+        const kibanaData = {
+            applicationID,
+            applicationName,
+            devEUI: convertDevEUIToLong(devEUI), // long 값으로 변환된 devEUI
+            deviceName: `${applicationName}_${devEUI}`,
+            Temp: temp ?? 0,
+            pH: ph ?? 0,
+            TURBIDITY: turbidity ?? 0,
+            DO: doValue ?? 0,
+            NH4: nh4 ?? 0,
+            salt: salt ?? 0,
+            ALCOHOL: 0, // 기본값
+            createdAt: currentTimeKibana, // MySQL 시간을 Kibana 형식으로 변환
+            updatedAt: currentTimeKibana,
+        };
+
+        let remainingSensors = sensors.length;
+        sensors.forEach((sensor) => {
+            if (sensor.value !== null) {
+                db.query(sensorInsertQuery, [deviceId, applicationID, applicationName, sensor.type, sensor.value], (err, result) => {
+                    if (err) {
+                        console.error(`Sensor 데이터 삽입 오류 (${sensor.type}):`, err);
+                        return;
+                    }
+                    console.log(`Sensor 데이터 삽입 완료 (${sensor.type}):`, result.insertId);
+
+                    remainingSensors--;
+                    if (remainingSensors === 0) {
+                        // 모든 센서 데이터 저장이 완료된 후 Kibana로 전송
+                        sendDataToKibana(kibanaData);
+                    }
+                });
+            } else {
+                remainingSensors--;
+            }
+        });
     });
 }
