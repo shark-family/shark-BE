@@ -1,39 +1,39 @@
-// mqtt_publisher.js
 const mqtt = require('mqtt');
 
+// 센서 브로커 정보 (수신 코드가 구독 중인 포트와 IP)
 const brokerIp = '210.94.199.225';
 const brokerPort = 1919;
 const brokerUrl = `mqtt://${brokerIp}:${brokerPort}`;
 
-// 토픽 설정 - 수신 코드에서 구독하고 있는 토픽과 맞아야 함!
-const topic = 'sensor/data';
+// 센서처럼 보낼 MQTT 토픽 (receiver.js가 구독 중인 토픽)
+const topic = 'application/4/device/C4DEE2CFB045/rx';  // sensors_info.js 기준
 
-// 예시 센서 데이터 (수동 전송할 내용)
+// 센서처럼 보낼 메시지 형식
 const message = JSON.stringify({
-  applicationID: 1001,
-  applicationName: 'haeunTEST',
-  devEUI: '1234567890ABCDEF',
+  applicationID: "4",
+  applicationName: "EP4_wifi",
+  devEUI: "C4DEE2CFB045",
   data: {
-    temp: 23.5,
-    ph: 7.1,
-    turbi: 10.3,
-    do: 8.4,
-    nh4: 0.2,
-    salt: 1.5
+    nh4: 4444,
+    ph: 4444,
+    turbi: 4444,
+    salt: 4444,
+    do: 4444,
+    temp: 4444
   }
 });
 
-// MQTT 브로커에 연결하고 메시지 전송
 const client = mqtt.connect(brokerUrl);
 
 client.on('connect', () => {
-  console.log(`✅ MQTT 브로커 연결됨: ${brokerUrl}`);
-  client.publish(topic, message, { qos: 0, retain: false }, (err) => {
+  console.log(`✅ MQTT 브로커에 연결됨: ${brokerUrl}`);
+  
+  client.publish(topic, message, { qos: 0 }, (err) => {
     if (err) {
-      console.error('❌ 메시지 전송 실패:', err);
+      console.error(`❌ 메시지 전송 실패:`, err);
     } else {
-      console.log(`📤 메시지 전송 완료\n토픽: ${topic}\n내용: ${message}`);
+      console.log(`📤 메시지 전송 성공\n📍토픽: ${topic}\n📦내용: ${message}`);
     }
-    client.end(); // 전송 후 연결 종료
+    client.end();
   });
 });
