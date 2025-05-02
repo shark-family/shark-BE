@@ -35,7 +35,7 @@ cse.mqttport    = '1883';
 cse.wsport      = '7577';
 
 // build ae
-ae.name         = 'kongju003';
+ae.name         = 'sharkFamily';
 
 ae.id           = 'S' + ae.name;
 

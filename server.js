@@ -120,3 +120,6 @@ app.get('/api/aquarium-log/:aquarium_id', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`✅ Server listening on http://localhost:${PORT}`);
 });
+
+// cr 중복 오류 시 mqtt 내부 리소스 삭제
+// curl -X DELETE "http://localhost:7579/Mobius/sharkfamily" -H "X-M2M-Origin: Ssharkfamily" -H "X-M2M-RI: 12345" -H "Accept: application/json"  -H "Content-Type: application/json;ty=2"
