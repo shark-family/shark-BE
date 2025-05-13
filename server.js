@@ -11,8 +11,9 @@ app.use(cors());
 
 // DB 연결 설정
 const db = mysql.createPool({
-  host: 'localhost',
+  host: 'svc.sel4.cloudtype.app',
   user: 'root',
+  port: '31873',
   password: '0000',
   database: 'mobiusdb'
 });
