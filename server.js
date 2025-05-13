@@ -5,6 +5,10 @@ const PORT = 3000;
 
 app.use(express.json());
 
+const cors = require('cors');
+app.use(cors());
+
+
 // DB 연결 설정
 const db = mysql.createPool({
   host: 'localhost',
@@ -90,11 +94,12 @@ app.get('/api/user-info/:username', async (req, res) => {
             updated_at: valueObj?.updated_at || null
           };
         });
-
+    
       return {
         aquarium_id: aq.id,
         name: aq.name,
         location: aq.location,
+        fish_type: aq.fish_type, 
         activeSensors,
         status: activeSensors.length ? '가동중' : '센서 없음'
       };
