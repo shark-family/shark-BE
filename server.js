@@ -199,7 +199,7 @@ app.post('/api/stop-sensor', async (req, res) => {
   }
 });
 
-// ✅ 5. 최근 이상치 조회 API -> 나중에 INTERVAL TIME 10분으로 조정하기!
+// ✅ 5. 최근 이상치 조회 API -> 나중에 INTERVAL TIME 조정하기!
 app.get('/api/anomaly-recent', async (req, res) => {
   try {
     const [rows] = await db.query(`
@@ -214,7 +214,7 @@ app.get('/api/anomaly-recent', async (req, res) => {
       JOIN sensor_usage_log su 
         ON su.sensor_id = s.id
       WHERE su.stopped_at IS NULL
-        AND al.created_at >= NOW() - INTERVAL 70 MINUTE
+        AND al.created_at >= NOW() - INTERVAL 60 MINUTE
      ORDER BY al.created_at DESC;
 
 
@@ -226,6 +226,8 @@ app.get('/api/anomaly-recent', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+require('./data_analyzer');
 
 // ✅ 서버 실행
 app.listen(PORT, () => {
