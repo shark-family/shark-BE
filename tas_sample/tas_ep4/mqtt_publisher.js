@@ -9,7 +9,7 @@ const client = mqtt.connect(brokerUrl);
 
 let count = 0;
 const maxCount = 100;
-const interval = 5000; // 5초 간격
+const interval = 50000; // 5초 간격
 
 function getSensorValue({ range, abnormalRange, isAbnormal = false }) {
   const isOutlier = isAbnormal && Math.random() < 0.15; // 15% 확률로 이상치
