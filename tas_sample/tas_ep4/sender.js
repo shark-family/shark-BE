@@ -1,53 +1,28 @@
-// usage :
-//// modify address_info.js to set the end point
-//const sender = require('./sender');
-//function send_to_elasticsearch() {
-//  const json_data = { // JSON data to be sent
-//    "applicationID": 1001,
-//    "applicationName": "TestApp",
-//    "devEUI": 1234567890123456,
-//    "deviceName": "Device1",
-//    "Temp": ep4.temp,
-//    "pH": ep4.ph,
-//    "TURBIDITY": ep4.turbi,
-//    "DO": ep4.do,
-//    "NH4": ep4.nh4,
-//    "salt": ep4.salt,
-//    "ALCOHOL": 0.0,
-//    "createdAt": new Date(),
-//    "updatedAt": new Date()
-//  };
-//  sender.send_elasticsearch(json_data);
-//}
-//wdt.set_wdt(require('shortid').generate(), 60 * 30, send_to_elasticsearch);
-const { Client } = require('@elastic/elasticsearch');
+// tas_sample/tas_ep4/sender.js
 
+const { Client } = require('@elastic/elasticsearch');
 const address_info = require('./address_info');
 
-// Replace with your Elasticsearch server details
-const client = new Client({ node: `http://${address_info.elasticsearch.ip}:${address_info.elasticsearch.port}` });
+const elasticUrl = `http://${address_info.elasticsearch.ip}:${address_info.elasticsearch.port}`;
+console.log('🔗 Connecting to Elasticsearch at:', elasticUrl);
 
-let id = 0;
+const client = new Client({
+  node: elasticUrl
+});
 
 async function send_elasticsearch(json_data) {
   try {
-    // Replace with your desired index, type, and JSON data
     const response = await client.index({
-      index: 'sensor',          // Elasticsearch index name
-      id: id.toString(),                   // Optional: Document ID
-      body: json_data,
+      index: 'sensor',         // 자동으로 고유 _id 생성
+      body: json_data
     });
 
-    ++id;
-
-    console.log('Document indexed:', response);
+    console.log(`✅ Document indexed: result=${response.result}, _id=${response._id}`);
   } catch (error) {
-    console.error('Error indexing document:', error);
+    console.error('❌ Error indexing document:', error.meta?.body || error);
   }
 }
 
-let sender = {
-  send_elasticsearch : send_elasticsearch
+module.exports = {
+  send_elasticsearch
 };
-
-module.exports = sender;

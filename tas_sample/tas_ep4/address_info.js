@@ -1,6 +1,6 @@
 let address_info = {
   elasticsearch : {
-    ip : '172.30.1.65',
+    ip : '34.47.81.172',
     port : 9200
   },
 };
