@@ -7,8 +7,6 @@
 #include <WiFiUdp.h>
 #include <NTPClient.h>
 #include <time.h>
-#include "DFRobot_EC10.h"
-#include <EEPROM.h>
 
 
 // ---- ORP 센서 ----
@@ -49,9 +47,13 @@ int tdsIndex = 0;
 
 // ---- EC 센서 ----
 #define ecPin A4
-float ecVoltage, ecValue;
-float ecTemp = 25;   // 기본 온도
-DFRobot_EC10 ec;
+#define VREF_EC 5.0
+#define ADC_MAX 1024
+float ecTemp = 25;   // 온도 보정용
+
+// ---- Turbidity 센서 ----
+#define tbPinA A5
+#define tbPinD 3
 
 // ---- Wi-Fi ----
 const char ssid[] = "yeah";
@@ -227,6 +229,24 @@ void loop() {
                   + 857.39*compensationVolatge) * 0.5;
 
 
+  // EC (A4)
+  int ecRaw = analogRead(ecPin);
+  float ecVolt = ecRaw * (VREF_EC / ADC_MAX);   // V
+  float ecValue = 0.0;
+  if (ecVolt >= 0.1) {
+    ecValue = 133.42*ecVolt*ecVolt*ecVolt - 255.86*ecVolt*ecVolt + 857.39*ecVolt;
+    ecValue = ecValue / (1.0 + 0.02*(ecTemp - 25.0)); // 온도 보정
+    if (ecValue < 0) ecValue = 0;
+  }
+
+  // Turbidity
+  int tbRaw = analogRead(tbPinA);
+  double tbVolt = tbRaw * (VOLTAGE / 1024.0);
+  double tbNTU = -1120.4*tbVolt*tbVolt + 5742.3*tbVolt - 4352.9;
+  if (tbNTU < 0) tbNTU = 0;
+  int tbDO = digitalRead(tbPinD);
+
+
   // 시리얼 출력 (0.8s)
   if (millis() - printTimer >= 800) {
     printTimer = millis();
@@ -234,6 +254,9 @@ void loop() {
     Serial.print("ORP: "); Serial.print((int)orpValue); Serial.print(" mV | ");
     Serial.print("pH: "); Serial.println(phValue,2);
     Serial.print("DO: "); Serial.print(doValue); Serial.println(" ug/L");
+    Serial.print("TDS: "); Serial.print(tdsValue,0); Serial.print(" ppm | ");
+    Serial.print("EC: "); Serial.print(ecValue,1); Serial.println(" ms/cm");
+     Serial.print("Turbidity: "); Serial.print(tbNTU,1); Serial.print(" NTU | DO:"); Serial.println(tbDO);
   }
 
   // MQTT 발행 (3s)
@@ -247,6 +270,8 @@ void loop() {
                      String(",\"ph\":") + String(phValue,2) +
                      String(",\"tds\":") + String(tdsValue,0) +
                      String(",\"do\":") + String(doValue) +
+                     String(",\"ec\":") + String(ecValue,1) +
+                     String(",\"turbidity\":") + String(tbNTU,1) +
                      String("}");
     mqttClient.beginMessage(topic);
     mqttClient.print(payload);
