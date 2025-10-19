@@ -1,112 +1,148 @@
+// server.js
 const express = require('express');
 const mysql = require('mysql2/promise');
+const cors = require('cors');
 const app = express();
 const PORT = 3000;
 
 app.use(express.json());
-
-const cors = require('cors');
 app.use(cors());
 
-
-// DB 연결 설정
+// ✅ DB 연결
 const db = mysql.createPool({
-  host: 'svc.sel4.cloudtype.app',
+  host: 'svc.sel3.cloudtype.app', // smart DB
   user: 'root',
-  port: '31873',
+  port: '32344',
   password: '0000',
-  database: 'mobiusdb'
+  database: 'smart'
 });
 
-// 기본 루트
+// ✅ 기본 루트
 app.get('/', (req, res) => {
-  res.send('서버 정상 작동 중입니다!');
+  res.send('🐟 스마트양식장 서버 정상 작동 중!');
 });
 
-
-// ✅ 1. 관리자 이름 → 수조 목록 + 보유 센서 + 센서값 포함 (기관 전체 기준)
+/**
+ * ✅ 1. 관리자 이름 → 수조 목록 + 보유 센서 + (수조별 최신) 센서값
+ *    - sensor_usage_log 로 “가동중” 센서를 결정
+ *    - 각 수조의 aquarium.device_id 로 sensor_data 에서 최신 1행 조회
+ *    - 기존 응답 스키마 그대로 유지
+ */
 app.get('/api/user-info/:username', async (req, res) => {
   const { username } = req.params;
 
   try {
-    // 사용자 조회
-    const [[user]] = await db.query(
-      'SELECT * FROM user WHERE name = ?', [username]
-    );
+    // 1) 사용자
+    const [[user]] = await db.query('SELECT * FROM user WHERE name = ?', [username]);
     if (!user) return res.status(404).json({ error: 'User not found' });
 
-    // 소속 기관명 조회 (cr 필터용)
-    const [[univ]] = await db.query(
-      'SELECT * FROM univ WHERE id = ?', [user.univ_id]
-    );
+    // 2) 소속기관
+    const [[univ]] = await db.query('SELECT * FROM univ WHERE id = ?', [user.univ_id]);
 
-    // 수조 목록
+    // 3) 수조 목록 (device_id 포함)
     const [aquariums] = await db.query(
-      'SELECT * FROM aquarium WHERE univ_id = ?', [user.univ_id]
+      'SELECT id, name, location, fish_type, univ_id, device_id FROM aquarium WHERE univ_id = ?',
+      [user.univ_id]
     );
 
-    // 센서 목록
-    const [sensors] = await db.query(
-      'SELECT * FROM sensor WHERE univ_id = ?', [user.univ_id]
-    );
+    // 4) 기관 내 센서 목록(보유 현황)
+    const [sensors] = await db.query('SELECT * FROM sensor WHERE univ_id = ?', [user.univ_id]);
 
-    // 센서 사용 로그 (기관 전체 기준)
+    // 5) 가동중 센서 로그
     const [logs] = await db.query(`
       SELECT 
         l.sensor_id, l.aquarium_id, s.type AS sensor_type, a.name AS aquarium_name
       FROM sensor_usage_log l
-      JOIN sensor s ON l.sensor_id = s.id
+      JOIN sensor s   ON l.sensor_id = s.id
       JOIN aquarium a ON l.aquarium_id = a.id
-      JOIN user u ON l.user_id = u.id
+      JOIN user u     ON l.user_id = u.id
       WHERE u.univ_id = ? AND l.stopped_at IS NULL
     `, [user.univ_id]);
 
-    // 센서값 조회 (pi에서 센서타입 추출)
-    const [cinData] = await db.query(`
-      SELECT 
-        SUBSTRING_INDEX(pi, '/', -1) AS sensor_type,
-        con, 
-        created_at
-      FROM cin
-      WHERE cr = ?
-      ORDER BY created_at DESC
-    `, [univ.name]);
+    // ★ 타입 정규화 (과거 명칭 → 현재 컬럼명으로 통일)
+    const normalizeType = (t = '') => {
+      const k = String(t).toLowerCase().trim();
+      const map = {
+        ph: 'ph',
+        orp: 'orp',
+        tds: 'tds',
+        do_val: 'do_val', // 현재 컬럼
+        ec: 'ec',
+        turbidity: 'turbidity',
+        // 구 명칭 호환
+        do: 'do_val',
+        salt: 'ec',
+        turbi: 'turbidity'
+      };
+      return map[k] || k;
+    };
 
-    // 센서 타입별로 가장 최신 값만 저장
-    const cinMap = {};
-    for (const row of cinData) {
-      if (!cinMap[row.sensor_type]) {
-        cinMap[row.sensor_type] = {
-          value: row.con,
-          updated_at: row.created_at
-        };
-      }
+    // 값 포맷(소수점 2자리)
+    const formatValue = (val) => {
+        if (val === null || val === undefined || isNaN(val)) return null;
+        const num = Number(val);
+        // 소수점 2자리까지 표시하되, .00이면 정수로, 0이 아닌 소수부만 유지
+        return num % 1 === 0 ? num.toString() : num.toFixed(2).replace(/\.?0+$/, '');
+    };
+
+    // 수조별 deviceId 묶기 (N+1 줄이기용 캐시)
+    const deviceIds = Array.from(
+      new Set(aquariums.map(a => a.device_id).filter(Boolean))
+    );
+
+    // deviceId → 최신 1행 매핑
+    const latestByDevice = new Map();
+    if (deviceIds.length) {
+      // 한번에 최신행 뽑는 쿼리 (deviceId별 최신 ts 조합)
+      const [rows] = await db.query(`
+        SELECT sd.deviceId, sd.ph, sd.orp, sd.tds, sd.do_val, sd.ec, sd.turbidity, sd.ts AS latest_ts
+        FROM sensor_data sd
+        JOIN (
+          SELECT deviceId, MAX(ts) AS latest_ts
+          FROM sensor_data
+          WHERE deviceId IN ( ${deviceIds.map(() => '?').join(',')} )
+          GROUP BY deviceId
+        ) t ON t.deviceId = sd.deviceId AND t.latest_ts = sd.ts
+      `, deviceIds);
+
+      rows.forEach(r => latestByDevice.set(r.deviceId, r));
     }
 
-    // 수조별로 연결된 센서 + 최근값 정리
+    // 수조별 응답 조립
     const aquariumStatus = aquariums.map((aq) => {
-      const activeSensors = logs
-        .filter(log => log.aquarium_id === aq.id)
-        .map(log => {
-          const valueObj = cinMap[log.sensor_type] || null;
-          return {
-            type: log.sensor_type,
-            value: valueObj?.value || null,
-            updated_at: valueObj?.updated_at || null
-          };
-        });
-    
+      const activeLogs = logs.filter(log => log.aquarium_id === aq.id);
+      const latestRow = aq.device_id ? (latestByDevice.get(aq.device_id) || null) : null;
+
+      // 이 수조의 최신값 맵
+      const latestMap = {};
+      ['ph','orp','tds','do_val','ec','turbidity'].forEach(type => {
+        latestMap[type] = latestRow
+          ? { value: latestRow[type] != null ? formatValue(latestRow[type]) : null,
+              updated_at: latestRow.latest_ts || null }
+          : { value: null, updated_at: null };
+      });
+
+      const activeSensors = activeLogs.map(log => {
+        const key = normalizeType(log.sensor_type);
+        const val = latestMap[key] || {};
+        return {
+          type: key,                             // ← 백엔드 타입 그대로 내려줌 (프론트에서 라벨 매핑)
+          value: val.value ?? null,
+          updated_at: val.updated_at ?? null
+        };
+      });
+
       return {
         aquarium_id: aq.id,
         name: aq.name,
         location: aq.location,
-        fish_type: aq.fish_type, 
+        fish_type: aq.fish_type,
         activeSensors,
         status: activeSensors.length ? '가동중' : '센서 없음'
       };
     });
 
-    // 최종 응답
+    // ✅ 최종 응답 (기존 구조 유지)
     res.json({
       user_id: user.id,
       univ_id: user.univ_id,
@@ -116,42 +152,45 @@ app.get('/api/user-info/:username', async (req, res) => {
     });
 
   } catch (err) {
-    console.error(err);
+    console.error('❌ [user-info] Error:', err);
     res.status(500).json({ error: err.message });
   }
 });
 
-
-// ✅ 2. 센서 작동 요청
+/**
+ * ✅ 2. 센서 작동 시작
+ */
 app.post('/api/start-sensor', async (req, res) => {
   const { user_id, aquarium_id, sensor_id } = req.body;
-  try {
-    // 센서가 이미 작동 중인지 확인
-    const [[existing]] = await db.query(`
-      SELECT * FROM sensor_usage_log 
-      WHERE sensor_id = ? AND stopped_at IS NULL
-    `, [sensor_id]);
 
+  try {
+    const [[existing]] = await db.query(
+      `SELECT * FROM sensor_usage_log WHERE sensor_id = ? AND stopped_at IS NULL`,
+      [sensor_id]
+    );
     if (existing) {
       return res.status(400).json({ status: '센서가 이미 사용 중입니다.' });
     }
 
-    // 사용 로그 삽입
-    await db.query(`
-      INSERT INTO sensor_usage_log (sensor_id, aquarium_id, user_id, started_at)
-      VALUES (?, ?, ?, NOW())
-    `, [sensor_id, aquarium_id, user_id]);
+    await db.query(
+      `INSERT INTO sensor_usage_log (sensor_id, aquarium_id, user_id, started_at)
+       VALUES (?, ?, ?, NOW())`,
+      [sensor_id, aquarium_id, user_id]
+    );
 
     res.json({ status: 'ok' });
   } catch (err) {
+    console.error('❌ [start-sensor] Error:', err);
     res.status(500).json({ error: err.message });
   }
 });
 
-
-// ✅ 3. 수조별 로그 조회
+/**
+ * ✅ 3. 수조별 로그 조회
+ */
 app.get('/api/aquarium-log/:aquarium_id', async (req, res) => {
   const { aquarium_id } = req.params;
+
   try {
     const [logs] = await db.query(`
       SELECT log.*, u.name AS user_name, s.type AS sensor_type
@@ -164,60 +203,52 @@ app.get('/api/aquarium-log/:aquarium_id', async (req, res) => {
 
     res.json({ logs });
   } catch (err) {
+    console.error('❌ [aquarium-log] Error:', err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// ✅ 4. 센서 작동 중지 요청
+/**
+ * ✅ 4. 센서 작동 중지
+ */
 app.post('/api/stop-sensor', async (req, res) => {
   const { sensor_id } = req.body;
 
   try {
-    // 작동 중인 로그가 있는지 확인
-    const [[activeLog]] = await db.query(`
+    const [[active]] = await db.query(`
       SELECT * FROM sensor_usage_log
       WHERE sensor_id = ? AND stopped_at IS NULL
-      ORDER BY started_at DESC
-      LIMIT 1
+      ORDER BY started_at DESC LIMIT 1
     `, [sensor_id]);
 
-    if (!activeLog) {
+    if (!active) {
       return res.status(400).json({ status: '해당 센서는 현재 작동 중이 아닙니다.' });
     }
 
-    // 종료 시간 기록
     await db.query(`
-      UPDATE sensor_usage_log
-      SET stopped_at = NOW()
-      WHERE id = ?
-    `, [activeLog.id]);
+      UPDATE sensor_usage_log SET stopped_at = NOW() WHERE id = ?
+    `, [active.id]);
 
-    res.json({ status: '센서 작동 중지 완료', stopped_log_id: activeLog.id });
+    res.json({ status: '센서 작동 중지 완료', stopped_log_id: active.id });
   } catch (err) {
-    console.error(err);
+    console.error('❌ [stop-sensor] Error:', err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// ✅ 5. 최근 이상치 조회 API -> 나중에 INTERVAL TIME 조정하기!
+/**
+ * ✅ 5. 최근 이상치 조회 (60분 내)
+ */
 app.get('/api/anomaly-recent', async (req, res) => {
   try {
     const [rows] = await db.query(`
-      SELECT 
-      al.sensor_type,
-      al.value,
-      al.created_at,
-      su.aquarium_id
+      SELECT al.sensor_type, al.value, al.created_at, su.aquarium_id
       FROM anomaly_log al
-      JOIN sensor s 
-        ON s.type = al.sensor_type
-      JOIN sensor_usage_log su 
-        ON su.sensor_id = s.id
+      JOIN sensor s ON s.type = al.sensor_type
+      JOIN sensor_usage_log su ON su.sensor_id = s.id
       WHERE su.stopped_at IS NULL
         AND al.created_at >= NOW() - INTERVAL 60 MINUTE
-     ORDER BY al.created_at DESC;
-
-
+      ORDER BY al.created_at DESC
     `);
 
     res.json(rows);
@@ -227,13 +258,7 @@ app.get('/api/anomaly-recent', async (req, res) => {
   }
 });
 
-require('./data_analyzer');
-
 // ✅ 서버 실행
 app.listen(PORT, () => {
-  console.log(`✅ Server listening on http://localhost:${PORT}`);
+  console.log(`✅ Server running on http://localhost:${PORT}`);
 });
-
-
-// cr 중복 오류 시 mqtt 내부 리소스 삭제
-// curl -X DELETE "http://localhost:7579/Mobius/sharkfamily" -H "X-M2M-Origin: Ssharkfamily" -H "X-M2M-RI: 12345" -H "Accept: application/json"  -H "Content-Type: application/json;ty=2"
